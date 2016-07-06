@@ -51,6 +51,11 @@ public final class InternalIterableWindowFunction<IN, OUT, KEY, W extends Window
 	}
 
 	@Override
+	public void apply(KEY key, W window, Iterable<IN> input, Collector<OUT> out, long firingCounter) throws Exception {
+		wrappedFunction.apply(key, window, input, out);
+	}
+
+	@Override
 	public void open(Configuration parameters) throws Exception {
 		FunctionUtils.openFunction(this.wrappedFunction, parameters);
 	}

@@ -47,4 +47,20 @@ public abstract class InternalWindowFunction<IN, OUT, KEY, W extends Window>
 	 * @throws Exception The function may throw exceptions to fail the program and trigger recovery.
 	 */
 	public abstract void apply(KEY key, W window, IN input, Collector<OUT> out) throws Exception;
+
+	/**
+	 * Evaluates the window and outputs none or several elements.
+	 * It is meant to be used with a {@link org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction}.
+	 *
+	 * @param key The key for which this window is evaluated.
+	 * @param window The window that is being evaluated.
+	 * @param input The elements in the window being evaluated.
+	 * @param out A collector for emitting elements.
+	 * @param firingCounter the window firing counter.
+	 *
+	 * @throws Exception The function may throw exceptions to fail the program and trigger recovery.
+	 */
+	public abstract void apply(KEY key, W window, IN input, Collector<OUT> out, long firingCounter) throws Exception;
+
+
 }
