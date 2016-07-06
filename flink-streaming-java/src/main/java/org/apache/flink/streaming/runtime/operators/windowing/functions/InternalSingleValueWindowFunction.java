@@ -53,6 +53,11 @@ public final class InternalSingleValueWindowFunction<IN, OUT, KEY, W extends Win
 	}
 
 	@Override
+	public void apply(KEY key, W window, IN input, Collector<OUT> out, long firingCounter) throws Exception {
+		wrappedFunction.apply(key, window, Collections.singletonList(input), out);
+	}
+
+	@Override
 	public void open(Configuration parameters) throws Exception {
 		FunctionUtils.openFunction(this.wrappedFunction, parameters);
 	}

@@ -23,16 +23,15 @@ import org.apache.flink.api.common.functions.RuntimeContext;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.streaming.api.functions.windowing.RichAllWindowFunction;
 import org.apache.flink.streaming.api.functions.windowing.RichWindowFunction;
 import org.apache.flink.streaming.api.operators.OutputTypeConfigurable;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
-import org.apache.flink.streaming.runtime.operators.windowing.functions.InternalIterableAllWindowFunction;
-import org.apache.flink.streaming.runtime.operators.windowing.functions.InternalIterableWindowFunction;
-import org.apache.flink.streaming.runtime.operators.windowing.functions.InternalSingleValueAllWindowFunction;
-import org.apache.flink.streaming.runtime.operators.windowing.functions.InternalSingleValueWindowFunction;
+import org.apache.flink.streaming.runtime.operators.windowing.functions.*;
 import org.apache.flink.util.Collector;
 import org.hamcrest.collection.IsIterableContainingInOrder;
+import org.junit.Assert;
 import org.junit.Test;
 
 import static org.mockito.Mockito.*;
@@ -201,6 +200,48 @@ public class InternalWindowFunctionTest {
 		verify(mock).close();
 	}
 
+	@SuppressWarnings("unchecked")
+	@Test
+	public void testInternalIterableProcessWindowFunction() throws Exception {
+
+		ProcessWindowFunctionMock mock = spy(new ProcessWindowFunctionMock(0));
+		InternalIterableProcessWindowFunction<Long, String, Long, TimeWindow> windowFunction =
+				new InternalIterableProcessWindowFunction<>(mock);
+
+		// check setOutputType
+		TypeInformation<String> stringType = BasicTypeInfo.STRING_TYPE_INFO;
+		ExecutionConfig execConf = new ExecutionConfig();
+		execConf.setParallelism(42);
+
+		windowFunction.setOutputType(stringType, execConf);
+		verify(mock).setOutputType(stringType, execConf);
+
+
+		// check open
+		Configuration config = new Configuration();
+
+		windowFunction.open(config);
+		//verify(mock).open(config);
+
+		// check setRuntimeContext
+		RuntimeContext rCtx = mock(RuntimeContext.class);
+
+		windowFunction.setRuntimeContext(rCtx);
+		//verify(mock).setRuntimeContext(rCtx);
+
+
+		// check process
+		TimeWindow w = mock(TimeWindow.class);
+		Iterable<Long> i = (Iterable<Long>)mock(Iterable.class);
+		Collector<String> c = (Collector<String>) mock(Collector.class);
+
+		windowFunction.apply(42L, w, i, c, 0);
+
+		// check close
+		windowFunction.close();
+
+	}
+
 	public static class WindowFunctionMock
 		extends RichWindowFunction<Long, String, Long, TimeWindow>
 		implements OutputTypeConfigurable<String> {
@@ -210,6 +251,29 @@ public class InternalWindowFunctionTest {
 
 		@Override
 		public void apply(Long aLong, TimeWindow window, Iterable<Long> input, Collector<String> out) throws Exception { }
+	}
+
+
+
+	public static class ProcessWindowFunctionMock
+			extends ProcessWindowFunction<Long, String, Long, TimeWindow>
+			implements OutputTypeConfigurable<String> {
+
+		long compareWith;
+
+		ProcessWindowFunctionMock(long value)
+		{
+			this.compareWith = value;
+		}
+
+		@Override
+		public void setOutputType(TypeInformation<String> outTypeInfo, ExecutionConfig executionConfig) { }
+
+
+		@Override
+		public void process(Context c) throws Exception {
+			Assert.assertEquals(compareWith, c.id());
+		}
 	}
 
 	public static class AllWindowFunctionMock

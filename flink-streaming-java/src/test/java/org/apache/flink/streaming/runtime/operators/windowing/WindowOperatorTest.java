@@ -29,10 +29,12 @@ import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.typeutils.TypeInfoParser;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.hadoop.shaded.org.jboss.netty.util.internal.ConcurrentHashMap;
 import org.apache.flink.streaming.api.datastream.WindowedStream;
 import org.apache.flink.streaming.api.environment.LocalStreamEnvironment;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.windowing.PassThroughWindowFunction;
+import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.streaming.api.functions.windowing.RichWindowFunction;
 import org.apache.flink.streaming.api.functions.windowing.WindowFunction;
 import org.apache.flink.streaming.api.watermark.Watermark;
@@ -56,6 +58,7 @@ import org.apache.flink.streaming.api.windowing.triggers.TriggerResult;
 import org.apache.flink.streaming.api.windowing.windows.GlobalWindow;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.streaming.api.windowing.windows.Window;
+import org.apache.flink.streaming.runtime.operators.windowing.functions.InternalIterableProcessWindowFunction;
 import org.apache.flink.streaming.runtime.operators.windowing.functions.InternalIterableWindowFunction;
 import org.apache.flink.streaming.runtime.operators.windowing.functions.InternalSingleValueWindowFunction;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
@@ -227,6 +230,103 @@ public class WindowOperatorTest {
 
 		// we close once in the rest...
 		Assert.assertEquals("Close was not called.", 2, closeCalled.get());
+	}
+
+
+	@Test
+	@SuppressWarnings("unchecked")
+	public void testSlidingEventTimeWindowsProcess() throws Exception {
+		closeCalled.set(0);
+
+		final int WINDOW_SIZE = 3;
+
+		final ConcurrentHashMap<String, Long> counters = new ConcurrentHashMap<>();
+		final ConcurrentLinkedQueue<Object> expectedOutput = new ConcurrentLinkedQueue<>();
+
+		TypeInformation<Tuple2<String, Integer>> inputType = TypeInfoParser.parse("Tuple2<String, Integer>");
+
+		ListStateDescriptor<Tuple2<String, Integer>> stateDesc = new ListStateDescriptor<>("window-contents",
+				inputType.createSerializer(new ExecutionConfig()));
+
+		WindowOperator<String, Tuple2<String, Integer>, Iterable<Tuple2<String, Integer>>, Tuple2<String, Integer>, GlobalWindow> operator = new WindowOperator<>(
+				GlobalWindows.create(),
+				new GlobalWindow.Serializer(),
+				new TupleKeySelector(),
+				BasicTypeInfo.STRING_TYPE_INFO.createSerializer(new ExecutionConfig()),
+				stateDesc,
+				new InternalIterableProcessWindowFunction<>(new ProcessSumReducer<GlobalWindow>(counters)),
+				ContinuousEventTimeTrigger.of(Time.of(WINDOW_SIZE, TimeUnit.SECONDS)),
+				0);
+
+		operator.setInputType(inputType, new ExecutionConfig());
+
+		OneInputStreamOperatorTestHarness<Tuple2<String, Integer>, Tuple2<String, Integer>> testHarness =
+				new OneInputStreamOperatorTestHarness<>(operator);
+
+		testHarness.configureForKeyedStream(new TupleKeySelector(), BasicTypeInfo.STRING_TYPE_INFO);
+
+		testHarness.open();
+
+		testHarness.processElement(new StreamRecord<>(new Tuple2<>("key1", 1), 0));
+
+		// add elements out-of-order
+		testHarness.processElement(new StreamRecord<>(new Tuple2<>("key2", 1), 3000));
+		testHarness.processElement(new StreamRecord<>(new Tuple2<>("key2", 1), 3999));
+
+		testHarness.processElement(new StreamRecord<>(new Tuple2<>("key1", 1), 20));
+		testHarness.processElement(new StreamRecord<>(new Tuple2<>("key1", 1), 999));
+
+		testHarness.processElement(new StreamRecord<>(new Tuple2<>("key2", 1), 1998));
+		testHarness.processElement(new StreamRecord<>(new Tuple2<>("key2", 1), 1999));
+		testHarness.processElement(new StreamRecord<>(new Tuple2<>("key2", 1), 1000));
+
+
+		testHarness.processWatermark(new Watermark(1000));
+		expectedOutput.add(new Watermark(1000));
+		TestHarnessUtil.assertOutputEqualsSorted("Output was not correct.", expectedOutput, testHarness.getOutput(), new Tuple2ResultSortComparator());
+
+
+		testHarness.processWatermark(new Watermark(2000));
+		expectedOutput.add(new Watermark(2000));
+		TestHarnessUtil.assertOutputEqualsSorted("Output was not correct.", expectedOutput, testHarness.getOutput(), new Tuple2ResultSortComparator());
+
+		testHarness.processWatermark(new Watermark(3000));
+		expectedOutput.add(new StreamRecord<>(new Tuple2<>("key1", 3), Long.MAX_VALUE));
+		expectedOutput.add(new Watermark(3000));
+		TestHarnessUtil.assertOutputEqualsSorted("Output was not correct.", expectedOutput, testHarness.getOutput(), new Tuple2ResultSortComparator());
+
+		testHarness.processWatermark(new Watermark(4000));
+		expectedOutput.add(new Watermark(4000));
+		TestHarnessUtil.assertOutputEqualsSorted("Output was not correct.", expectedOutput, testHarness.getOutput(), new Tuple2ResultSortComparator());
+
+		testHarness.processWatermark(new Watermark(5000));
+		expectedOutput.add(new Watermark(5000));
+		TestHarnessUtil.assertOutputEqualsSorted("Output was not correct.", expectedOutput, testHarness.getOutput(), new Tuple2ResultSortComparator());
+
+		testHarness.processWatermark(new Watermark(6000));
+
+		expectedOutput.add(new StreamRecord<>(new Tuple2<>("key1", 3), Long.MAX_VALUE));
+
+		expectedOutput.add(new StreamRecord<>(new Tuple2<>("key2", 5), Long.MAX_VALUE));
+		expectedOutput.add(new Watermark(6000));
+		TestHarnessUtil.assertOutputEqualsSorted("Output was not correct.", expectedOutput, testHarness.getOutput(), new Tuple2ResultSortComparator());
+
+
+		// those don't have any effect...
+		testHarness.processWatermark(new Watermark(7000));
+		testHarness.processWatermark(new Watermark(8000));
+		expectedOutput.add(new Watermark(7000));
+		expectedOutput.add(new Watermark(8000));
+
+
+		testHarness.close();
+
+		Assert.assertEquals((long) counters.get("key1"), 1L);
+		Assert.assertEquals((long) counters.get("key2"), 0L);
+
+
+		// we close once in the rest...
+		//Assert.assertEquals("Close was not called.", 2, closeCalled.get());
 	}
 
 	private void testTumblingEventTimeWindows(OneInputStreamOperatorTestHarness<Tuple2<String, Integer>, Tuple2<String, Integer>> testHarness) throws Exception {
@@ -2005,6 +2105,32 @@ public class WindowOperatorTest {
 
 	}
 
+
+	public static class ProcessSumReducer<W extends Window>
+			extends ProcessWindowFunction<Tuple2<String, Integer>, Tuple2<String, Integer>, String, W> {
+		private static final long serialVersionUID = 1L;
+
+		private final ConcurrentHashMap<String, Long> counters;
+
+		ProcessSumReducer(ConcurrentHashMap<String, Long> c)
+		{
+			counters = c;
+		}
+
+		@Override
+		public void process(Context c) throws Exception {
+			int sum = 0;
+
+			for (Tuple2<String, Integer> t: c.elements()) {
+				sum += t.f1;
+			}
+
+			c.output(new Tuple2<>(c.key(), sum));
+
+			counters.put(c.key(), c.id());
+		}
+	}
+
 	@SuppressWarnings("unchecked")
 	private static class Tuple2ResultSortComparator implements Comparator<Object> {
 		@Override
@@ -2092,7 +2218,6 @@ public class WindowOperatorTest {
 			}
 		}
 	}
-
 
 	public static class PointSessionWindows extends EventTimeSessionWindows {
 		private static final long serialVersionUID = 1L;
